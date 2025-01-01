@@ -7,7 +7,7 @@ import (
 )
 
 // CreateLUKSVolume set up a new LUKS volume with the specified size and password
-func CreateLUKSVolume(filePath, password string, sizeMB int, useTPM bool) error {
+func CreateLUKSVolume(filePath string, password string, sizeMB int, useTPM bool) error {
 	if sizeMB < 1 || sizeMB > 10 {
 		return fmt.Errorf("size must be between 1MB and 10MB")
 	}

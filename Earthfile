@@ -7,7 +7,7 @@ build:
     #COPY cmd/udm/main.go .
     COPY . ./
     RUN go mod download
-    RUN go build -o output/bootstrap ./cmd/udm/main.go
+    RUN go build -o output/bootstrap ./cmd/udm/main.go ./cmd/udm/utils.go
     SAVE ARTIFACT output/bootstrap AS LOCAL output/bootstrap
 
 docker:
