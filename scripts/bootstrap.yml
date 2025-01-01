@@ -1,0 +1,5 @@
+# Sample Bootstrap Token
+bootstrap:
+  token-id: "abcd1234"
+  version: "1.0"
+
