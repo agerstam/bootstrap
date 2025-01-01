@@ -11,10 +11,6 @@ import (
 	"syscall"
 )
 
-type AppConfig struct {
-	Verbose bool
-}
-
 func main() {
 
 	// Parse command line flags
@@ -23,47 +19,26 @@ func main() {
 	deauthorize := flag.Bool("deauthorize", false, "Deauthorize the node")
 
 	flag.Parse()
-	context := AppConfig{Verbose: *verbose}
+	//cfg := config.AppConfig{Verbose: *verbose}
 
 	// Read and parse the settings file
-	s := readSettings("settings.yml", context)
+	cfg := readSettings("settings.yml")
 
 	if *authorizeFile != "" && *deauthorize {
 		log.Fatal("You must provide either the -authorize or -deauthorize flag, not both")
 	} else if *authorizeFile != "" {
 
 		// Read and parse the bootstrap token file
-		readBootstrapToken(*authorizeFile, context)
+		readBootstrapToken(*authorizeFile)
 
-		// Generate high entropy password
-		password, err := GeneratePassword(s.Settings.PasswordLength)
-		if err != nil {
-			log.Fatalf("Failed to generate password: %v", err)
-		}
-
-		fmt.Println("Bootstrap: Creating LUKS volume ...")
-		if err := luks.CreateLUKSVolume(s.Settings.VolumePath, password, s.Settings.Size, s.Settings.UseTPM); err != nil {
-			log.Fatalf("Failed to create LUKS volume: %v", err)
-		}
-
-		fmt.Println("Bootstrap: Opening LUKS volume ...")
-		if err := luks.OpenLUKSVolume(s.Settings.VolumePath, password, s.Settings.MapperName); err != nil {
-			log.Fatalf("Failed to open LUKS volume: %v", err)
-		}
-
-		fmt.Println("Bootstrap: Formatting LUKS volume ...")
-		if err := luks.FormatLUKSVolume(s.Settings.MapperName); err != nil {
-			log.Fatalf("Failed to format LUKS volume: %v", err)
-		}
-
-		fmt.Println("Bootstrap: Mounting LUKS volume ...")
-		if err := luks.MountLUKSVolume(s.Settings.MapperName, s.Settings.MountPoint); err != nil {
-			log.Fatalf("Failed to mount LUKS volume: %v", err)
+		// Setup LUKS volume
+		if err := luks.SetupLUKSVolume(&cfg.LUKS); err != nil {
+			log.Fatalf("Failed to setup LUKS volume: %v", err)
 		}
 		fmt.Println("Bootstrap: LUKS volume mounted successfully")
 
 	} else if *deauthorize {
-		deauthorizeNode(s.Settings.MapperName, s.Settings.MountPoint, context)
+		deauthorizeNode(cfg)
 	} else {
 		// No valid flag
 		log.Fatal("You must provide either the -authorize or -deauthorize flag")
@@ -73,23 +48,23 @@ func main() {
 	}
 
 	// Setup signal handling for graceful shutdown
-	setupSignalHandler(s.Settings.MapperName, s.Settings.MountPoint)
+	setupSignalHandler(cfg)
 
-	fmt.Printf("LUKS volume successfully mounted at %s\n", s.Settings.MountPoint)
+	fmt.Printf("LUKS volume successfully mounted at %s\n", cfg.LUKS.MountPoint)
 	fmt.Println("Press Ctrl+C to exit and clean up.")
 	select {} // Wait indefinitely
 }
 
-func deauthorizeNode(mapperName string, mountPoint string, context AppConfig) {
+func deauthorizeNode(cfg *config.AppConfig) {
 	fmt.Println("Bootstrap: Deauthorizing node")
 
-	if err := luks.CleanupLUKSVolume(mapperName, mountPoint); err != nil {
+	if err := luks.CleanupLUKSVolume(&cfg.LUKS); err != nil {
 		log.Printf("Error cleaning up LUKS volume: %v", err)
 	}
 	os.Exit(0)
 }
 
-func readBootstrapToken(filePath string, context AppConfig) (token *config.BootstrapToken) {
+func readBootstrapToken(filePath string) (token *config.BootstrapToken) {
 	fmt.Printf("Bootstrap: Authorizing node using file: %s\n", filePath)
 
 	// Check if the file parameter was provided
@@ -109,39 +84,39 @@ func readBootstrapToken(filePath string, context AppConfig) (token *config.Boots
 	}
 
 	fmt.Printf("Bootstrap Token: \n")
-	fmt.Printf("Token-Id: %s\n", token.Bootstrap.TokenId)
-	fmt.Printf("Version: %s\n", token.Bootstrap.Version)
+	fmt.Printf("   Token-Id: %s\n", token.Bootstrap.TokenId)
+	fmt.Printf("   Version: %s\n", token.Bootstrap.Version)
 
 	return token
 }
 
-func readSettings(filePath string, context AppConfig) (settings *config.AppSettings) {
+func readSettings(filePath string) *config.AppConfig {
 	fmt.Printf("Bootstrap: Reading settings from file: %s\n", filePath)
 
 	// Load configuration
-	settings, err := config.LoadSettings(filePath)
+	cfg, err := config.LoadSettings(filePath)
 	if err != nil {
 		log.Printf("Failed to load configuration (using defaults): %v", err)
 	}
 
 	// Validate
-	if err := settings.Validate(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		log.Fatalf("Invalid configuration: %v", err)
 	}
 
-	fmt.Printf("Settings: \n")
-	fmt.Printf("Volume Path: %s\n", settings.Settings.VolumePath)
-	fmt.Printf("Mapper Name: %s\n", settings.Settings.MapperName)
-	fmt.Printf("Mount Point: %s\n", settings.Settings.MountPoint)
-	fmt.Printf("Password Length: %d\n", settings.Settings.PasswordLength)
-	fmt.Printf("Size: %s\n", settings.Settings.Size)
-	fmt.Printf("Use TPM: %t\n", settings.Settings.UseTPM)
+	fmt.Printf("LUKS Config: \n")
+	fmt.Printf("   Volume Path: %s \n", cfg.LUKS.VolumePath)
+	fmt.Printf("   Mapper Name: %s \n", cfg.LUKS.MapperName)
+	fmt.Printf("   Mount Point: %s \n", cfg.LUKS.MountPoint)
+	fmt.Printf("   Password Length: %d \n", cfg.LUKS.PasswordLength)
+	fmt.Printf("   Size: %d \n", cfg.LUKS.Size)
+	fmt.Printf("   Use TPM: %t \n", cfg.LUKS.UseTPM)
 
-	return settings
+	return cfg
 }
 
 // setupSignalHandler ensures cleanup happens on program exit.
-func setupSignalHandler(mapperName, mountPoint string) {
+func setupSignalHandler(cfg *config.AppConfig) {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 
@@ -149,7 +124,7 @@ func setupSignalHandler(mapperName, mountPoint string) {
 		<-c
 		fmt.Println("\nReceived interrupt. Cleaning up...")
 
-		if err := luks.CleanupLUKSVolume(mapperName, mountPoint); err != nil {
+		if err := luks.CleanupLUKSVolume(&cfg.LUKS); err != nil {
 			log.Printf("Error cleaning up LUKS volume: %v", err)
 		}
 		os.Exit(0)

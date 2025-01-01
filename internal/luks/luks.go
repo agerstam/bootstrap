@@ -1,10 +1,57 @@
 package luks
 
 import (
+	"crypto/rand"
 	"fmt"
+	"log"
+	"math/big"
 	"os"
 	"os/exec"
 )
+
+type LUKS struct {
+	VolumePath     string `yaml:"volumePath"`
+	MapperName     string `yaml:"mapperName"`
+	MountPoint     string `yaml:"mountpoint"`
+	PasswordLength int    `yaml:"passwordLength"`
+	Password       string `yaml:"-"`
+	Size           int    `yaml:"size"`
+	UseTPM         bool   `yaml:"useTPM"`
+}
+
+// SetupLUKSVolume sets up and mounts a new LUKS volume
+func SetupLUKSVolume(cfg *LUKS) error {
+
+	if cfg == nil {
+		return fmt.Errorf("LUKS configuration is nil")
+	}
+	// Generate high entropy password
+	password, err := GeneratePassword(cfg.PasswordLength)
+	if err != nil {
+		log.Fatalf("Failed to generate password: %v", err)
+	}
+
+	fmt.Println("Bootstrap: Creating LUKS volume ...")
+	if err := CreateLUKSVolume(cfg.VolumePath, password, cfg.Size, cfg.UseTPM); err != nil {
+		log.Fatalf("Failed to create LUKS volume: %v", err)
+	}
+
+	fmt.Println("Bootstrap: Opening LUKS volume ...")
+	if err := OpenLUKSVolume(cfg.VolumePath, password, cfg.MapperName); err != nil {
+		log.Fatalf("Failed to open LUKS volume: %v", err)
+	}
+
+	fmt.Println("Bootstrap: Formatting LUKS volume ...")
+	if err := FormatLUKSVolume(cfg.MapperName); err != nil {
+		log.Fatalf("Failed to format LUKS volume: %v", err)
+	}
+
+	fmt.Println("Bootstrap: Mounting LUKS volume ...")
+	if err := MountLUKSVolume(cfg.MapperName, cfg.MountPoint); err != nil {
+		log.Fatalf("Failed to mount LUKS volume: %v", err)
+	}
+	return nil
+}
 
 // CreateLUKSVolume set up a new LUKS volume with the specified size and password
 func CreateLUKSVolume(filePath string, password string, sizeMB int, useTPM bool) error {
@@ -69,22 +116,26 @@ func FormatLUKSVolume(mapperName string) error {
 }
 
 // CleanupLUKSVolume unmounts and closes the LUKS volume and removes the mount point
-func CleanupLUKSVolume(mapperName, mountPoint string) error {
+func CleanupLUKSVolume(cfg *LUKS) error {
 	fmt.Println("Unmounting LUKS volume...")
-	if err := unmountLUKSVolume(mountPoint); err != nil {
+	if err := unmountLUKSVolume(cfg.MountPoint); err != nil {
 		return fmt.Errorf("failed to unmount LUKS volume: %w", err)
 	}
 
 	fmt.Println("Closing LUKS volume...")
-	if err := closeLUKSVolume(mapperName); err != nil {
+	if err := closeLUKSVolume(cfg.MapperName); err != nil {
 		return fmt.Errorf("failed to close LUKS volume: %w", err)
 	}
 
 	fmt.Println("Removing mount directory...")
-	if err := os.RemoveAll(mountPoint); err != nil {
+	if err := os.RemoveAll(cfg.MountPoint); err != nil {
 		return fmt.Errorf("failed to remove mount directory: %w", err)
 	}
 
+	fmt.Println("Removing LUKS image file ...")
+	if err := os.Remove(cfg.VolumePath); err != nil {
+		return fmt.Errorf("failed to remove LUKS image file: %w", err)
+	}
 	return nil
 }
 
@@ -204,4 +255,26 @@ func retrievePasswordFromTPM() (string, error) {
 		return "", fmt.Errorf("tpm2_nvread error: %w", err)
 	}
 	return string(output), nil
+}
+
+func GeneratePassword(length int) (string, error) {
+	if length <= 0 || length > 64 {
+		return "", fmt.Errorf("password length must be between 1 and 64")
+	}
+
+	// Define the character set for the password.
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+[]{}|;:,.<>?/"
+	charsetLength := big.NewInt(int64(len(charset)))
+
+	// Generate the password.
+	password := make([]byte, length)
+	for i := 0; i < length; i++ {
+		charIndex, err := rand.Int(rand.Reader, charsetLength)
+		if err != nil {
+			return "", fmt.Errorf("failed to generate random character: %w", err)
+		}
+		password[i] = charset[charIndex.Int64()]
+	}
+
+	return string(password), nil
 }

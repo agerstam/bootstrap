@@ -34,39 +34,40 @@ func (cfg *BootstrapToken) Validate() error {
 	return nil
 }
 
-func LoadSettings(filePath string) (*AppSettings, error) {
+func LoadSettings(filePath string) (*AppConfig, error) {
+	// Parse the YML file
+	var cfg AppConfig
+
 	// Open the YML file
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open file: %w", err)
+		return &cfg, fmt.Errorf("failed to open file: %w", err)
 	}
 	defer file.Close()
 
-	// Parse the YML file
-	var settings AppSettings
 	decoder := yaml.NewDecoder(file)
-	if err := decoder.Decode(&settings); err != nil {
-		return nil, fmt.Errorf("failed to parse YAML file: %w", err)
+	if err := decoder.Decode(&cfg); err != nil {
+		return &cfg, fmt.Errorf("failed to parse YAML file: %w", err)
 	}
-	return &settings, nil
+	return &cfg, nil
 }
 
-func (cfg *AppSettings) Validate() error {
+func (cfg *AppConfig) Validate() error {
 
-	if cfg.Settings.VolumePath == "" {
-		cfg.Settings.VolumePath = "udm-luks.img" // default value
+	if cfg.LUKS.VolumePath == "" {
+		cfg.LUKS.VolumePath = "udm-luks.img" // default value
 	}
-	if cfg.Settings.MapperName == "" {
-		cfg.Settings.MapperName = "udm-luks" // default value
+	if cfg.LUKS.MapperName == "" {
+		cfg.LUKS.MapperName = "udm-luks" // default value
 	}
-	if cfg.Settings.MountPoint == "" {
-		cfg.Settings.MountPoint = "mnt/udm-luks" // default value
+	if cfg.LUKS.MountPoint == "" {
+		cfg.LUKS.MountPoint = "mnt/udm-luks" // default value
 	}
-	if cfg.Settings.PasswordLength == 0 {
-		cfg.Settings.PasswordLength = 20 // default value
+	if cfg.LUKS.PasswordLength == 0 {
+		cfg.LUKS.PasswordLength = 20 // default value
 	}
-	if cfg.Settings.Size == 0 {
-		cfg.Settings.Size = 10 // default value
+	if cfg.LUKS.Size == 0 {
+		cfg.LUKS.Size = 10 // default value
 	}
 	return nil
 }
