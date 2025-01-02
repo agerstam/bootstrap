@@ -12,19 +12,8 @@ type BootstrapToken struct {
 }
 
 type AppConfig struct {
-	Verbose   bool          // Verbose logging
-	luks.LUKS `yaml:"luks"` // LUKS configuration
-	/*
-		LUKS    struct {
-			VolumePath     string `yaml:"volumePath"`
-			MapperName     string `yaml:"mapperName"`
-			MountPoint     string `yaml:"mountpoint"`
-			PasswordLength int    `yaml:"passwordLength"`
-			Password       string `yaml:"-"`
-			Size           int    `yaml:"size"`
-			UseTPM         bool   `yaml:"useTPM"`
-		} `yaml:"luks"`
-	*/
+	BootstrapFile *string   // Path to the bootstrap file
+	Deauthorize   *bool     // Authorize or Deauthorize the node
+	Verbose       *bool     // Verbose logging
+	LUKS          luks.LUKS `yaml:"luks"` // LUKS configuration
 }
-
-// LoadConfig reads the YAML configuration file and returns a BootstrapToken

@@ -13,23 +13,21 @@ import (
 
 func main() {
 
-	// Parse command line flags
-	verbose := flag.Bool("verbose", false, "Enable verbose logging")
-	authorizeFile := flag.String("authorize", "", "Authorize a node, requires path to the YAML configuration file")
-	deauthorize := flag.Bool("deauthorize", false, "Deauthorize the node")
-
-	flag.Parse()
-	//cfg := config.AppConfig{Verbose: *verbose}
-
 	// Read and parse the settings file
-	cfg := readSettings("settings.yml")
+	cfg := readConfig("config.yml")
 
-	if *authorizeFile != "" && *deauthorize {
+	// Parse command line flags
+	cfg.Verbose = flag.Bool("verbose", false, "Enable verbose logging")
+	cfg.BootstrapFile = flag.String("authorize", "", "Authorize a node, requires path to the YAML configuration file")
+	cfg.Deauthorize = flag.Bool("deauthorize", false, "Deauthorize the node")
+	flag.Parse()
+
+	if *cfg.BootstrapFile != "" && *cfg.Deauthorize {
 		log.Fatal("You must provide either the -authorize or -deauthorize flag, not both")
-	} else if *authorizeFile != "" {
+	} else if *cfg.BootstrapFile != "" {
 
 		// Read and parse the bootstrap token file
-		readBootstrapToken(*authorizeFile)
+		readBootstrapToken(*cfg.BootstrapFile)
 
 		// Setup LUKS volume
 		if err := luks.SetupLUKSVolume(&cfg.LUKS); err != nil {
@@ -37,14 +35,14 @@ func main() {
 		}
 		fmt.Println("Bootstrap: LUKS volume mounted successfully")
 
-	} else if *deauthorize {
+	} else if *cfg.Deauthorize {
 		deauthorizeNode(cfg)
 	} else {
 		// No valid flag
 		log.Fatal("You must provide either the -authorize or -deauthorize flag")
 	}
-	if *verbose {
-		log.Println("Verbose logging enabled")
+	if *cfg.Verbose {
+		log.Println("Bootstrap: Verbose logging enabled")
 	}
 
 	// Setup signal handling for graceful shutdown
@@ -52,7 +50,7 @@ func main() {
 
 	fmt.Printf("LUKS volume successfully mounted at %s\n", cfg.LUKS.MountPoint)
 	fmt.Println("Press Ctrl+C to exit and clean up.")
-	select {} // Wait indefinitely
+	select {} // Wait FOREVER
 }
 
 func deauthorizeNode(cfg *config.AppConfig) {
@@ -84,13 +82,13 @@ func readBootstrapToken(filePath string) (token *config.BootstrapToken) {
 	}
 
 	fmt.Printf("Bootstrap Token: \n")
-	fmt.Printf("   Token-Id: %s\n", token.Bootstrap.TokenId)
+	fmt.Printf("   Token ID: %s\n", token.Bootstrap.TokenId)
 	fmt.Printf("   Version: %s\n", token.Bootstrap.Version)
 
 	return token
 }
 
-func readSettings(filePath string) *config.AppConfig {
+func readConfig(filePath string) *config.AppConfig {
 	fmt.Printf("Bootstrap: Reading settings from file: %s\n", filePath)
 
 	// Load configuration

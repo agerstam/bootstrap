@@ -12,11 +12,11 @@ import (
 type LUKS struct {
 	VolumePath     string `yaml:"volumePath"`
 	MapperName     string `yaml:"mapperName"`
-	MountPoint     string `yaml:"mountpoint"`
+	MountPoint     string `yaml:"mountPoint"`
 	PasswordLength int    `yaml:"passwordLength"`
-	Password       string `yaml:"-"`
 	Size           int    `yaml:"size"`
 	UseTPM         bool   `yaml:"useTPM"`
+	Password       string `yaml:"-"`
 }
 
 // SetupLUKSVolume sets up and mounts a new LUKS volume
@@ -66,6 +66,12 @@ func CreateLUKSVolume(filePath string, password string, sizeMB int, useTPM bool)
 
 	// Optionally store the password in the TPM
 	if useTPM {
+
+		// Remove the password from the TPM if it already exists
+		if err := removePasswordFromTPM(); err != nil {
+			log.Printf("failed to remove existing password from TPM: %s", err)
+		}
+
 		if err := storePasswordInTPM(password); err != nil {
 			return fmt.Errorf("failed to store password in TPM: %w", err)
 		}
@@ -135,6 +141,12 @@ func CleanupLUKSVolume(cfg *LUKS) error {
 	fmt.Println("Removing LUKS image file ...")
 	if err := os.Remove(cfg.VolumePath); err != nil {
 		return fmt.Errorf("failed to remove LUKS image file: %w", err)
+	}
+	if cfg.UseTPM {
+		fmt.Println("Removing password from TPM ...")
+		if err := removePasswordFromTPM(); err != nil {
+			return fmt.Errorf("failed to remove password from TPM: %w", err)
+		}
 	}
 	return nil
 }
@@ -244,6 +256,15 @@ func storePasswordInTPM(password string) error {
 		return fmt.Errorf("tpm2_nvwrite error: %s", string(output))
 	}
 
+	return nil
+}
+
+// removePasswordFromTPM removes the LUKS password from the TPM.
+func removePasswordFromTPM() error {
+	cmd := exec.Command("tpm2_nvundefine", "0x1500016")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("tpm2_nvundefine error: %s", string(output))
+	}
 	return nil
 }
 
