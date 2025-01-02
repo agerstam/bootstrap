@@ -56,7 +56,7 @@ func main() {
 func deauthorizeNode(cfg *config.AppConfig) {
 	fmt.Println("Bootstrap: Deauthorizing node")
 
-	if err := luks.CleanupLUKSVolume(&cfg.LUKS); err != nil {
+	if err := luks.RemoveLUKSVolume(&cfg.LUKS); err != nil {
 		log.Printf("Error cleaning up LUKS volume: %v", err)
 	}
 	os.Exit(0)
@@ -122,7 +122,7 @@ func setupSignalHandler(cfg *config.AppConfig) {
 		<-c
 		fmt.Println("\nReceived interrupt. Cleaning up...")
 
-		if err := luks.CleanupLUKSVolume(&cfg.LUKS); err != nil {
+		if err := luks.UnmountAndCloseLUKSVolume(&cfg.LUKS); err != nil {
 			log.Printf("Error cleaning up LUKS volume: %v", err)
 		}
 		os.Exit(0)

@@ -19,6 +19,8 @@ type LUKS struct {
 	Password       string `yaml:"-"`
 }
 
+const DefaultNVIndex = "0x1500016"
+
 // SetupLUKSVolume sets up and mounts a new LUKS volume
 func SetupLUKSVolume(cfg *LUKS) error {
 
@@ -47,14 +49,33 @@ func SetupLUKSVolume(cfg *LUKS) error {
 	}
 
 	fmt.Println("Bootstrap: Mounting LUKS volume ...")
-	if err := MountLUKSVolume(cfg.MapperName, cfg.MountPoint); err != nil {
+	if err := mountLUKSVolume(cfg.MapperName, cfg.MountPoint); err != nil {
 		log.Fatalf("Failed to mount LUKS volume: %v", err)
 	}
 	return nil
 }
 
+func UnmountAndCloseLUKSVolume(cfg *LUKS) error {
+	if cfg == nil {
+		return fmt.Errorf("LUKS configuration is nil")
+	}
+
+	fmt.Println("Unmounting LUKS volume...")
+	if err := unmountLUKSVolume(cfg.MountPoint); err != nil {
+		log.Printf("Failed to unmount LUKS volume: %v", err)
+	}
+
+	fmt.Println("Closing LUKS volume...")
+	if err := closeLUKSVolume(cfg.MapperName); err != nil {
+		log.Printf("Failed to close LUKS volume: %v", err)
+	}
+
+	return nil
+}
+
 // CreateLUKSVolume set up a new LUKS volume with the specified size and password
 func CreateLUKSVolume(filePath string, password string, sizeMB int, useTPM bool) error {
+
 	if sizeMB < 1 || sizeMB > 10 {
 		return fmt.Errorf("size must be between 1MB and 10MB")
 	}
@@ -68,11 +89,11 @@ func CreateLUKSVolume(filePath string, password string, sizeMB int, useTPM bool)
 	if useTPM {
 
 		// Remove the password from the TPM if it already exists
-		if err := removePasswordFromTPM(); err != nil {
+		if err := removePasswordFromTPM(DefaultNVIndex); err != nil {
 			log.Printf("failed to remove existing password from TPM: %s", err)
 		}
 
-		if err := storePasswordInTPM(password); err != nil {
+		if err := storePasswordInTPM(password, "0x1500016"); err != nil {
 			return fmt.Errorf("failed to store password in TPM: %w", err)
 		}
 	}
@@ -100,7 +121,7 @@ func OpenLUKSVolume(volumePath, password, mapperName string) error {
 	}
 
 	cmd := exec.Command("cryptsetup", "luksOpen", volumePath, mapperName)
-	cmd.Stdin = createPasswordInput(password)
+	cmd.Stdin = createPasswordInput(password, true)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to open LUKS volume: %s", output)
@@ -122,7 +143,7 @@ func FormatLUKSVolume(mapperName string) error {
 }
 
 // CleanupLUKSVolume unmounts and closes the LUKS volume and removes the mount point
-func CleanupLUKSVolume(cfg *LUKS) error {
+func RemoveLUKSVolume(cfg *LUKS) error {
 	fmt.Println("Unmounting LUKS volume...")
 	if err := unmountLUKSVolume(cfg.MountPoint); err != nil {
 		return fmt.Errorf("failed to unmount LUKS volume: %w", err)
@@ -144,7 +165,7 @@ func CleanupLUKSVolume(cfg *LUKS) error {
 	}
 	if cfg.UseTPM {
 		fmt.Println("Removing password from TPM ...")
-		if err := removePasswordFromTPM(); err != nil {
+		if err := removePasswordFromTPM(DefaultNVIndex); err != nil {
 			return fmt.Errorf("failed to remove password from TPM: %w", err)
 		}
 	}
@@ -152,7 +173,7 @@ func CleanupLUKSVolume(cfg *LUKS) error {
 }
 
 // MountLUKSVolume mounts the mapped LUKS volume to the specified mount point
-func MountLUKSVolume(mapperName, mountPoint string) error {
+func mountLUKSVolume(mapperName, mountPoint string) error {
 	devicePath := "/dev/mapper/" + mapperName
 	if err := os.MkdirAll(mountPoint, 0755); err != nil {
 		return fmt.Errorf("failed to create mount point: %w", err)
@@ -215,7 +236,7 @@ func luksFormat(filePath, password string) error {
 		"--type=luks1",
 		filePath,
 	)
-	cmd.Stdin = createPasswordInput(password)
+	cmd.Stdin = createPasswordInput(password, true)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -224,24 +245,35 @@ func luksFormat(filePath, password string) error {
 	return nil
 }
 
-// createPasswordInput creates a byte slice containing the password
-func createPasswordInput(password string) *os.File {
+// createPasswordInput creates a pipe to provide the password as input.
+func createPasswordInput(password string, addNewline bool) *os.File {
 	r, w, _ := os.Pipe()
 
 	go func() {
 		defer w.Close()
-		w.WriteString(password + "\n")
+		if addNewline {
+			w.WriteString(password + "\n")
+		} else {
+			w.WriteString(password)
+		}
 	}()
 
 	return r
 }
 
 // storePasswordInTPM stores the LUKS password securely in the TPM.
-func storePasswordInTPM(password string) error {
-	// Define the NV index
+func storePasswordInTPM(password string, nvIndex string) error {
+
+	// Validate password length
+	passwordLength := len(password)
+	if passwordLength < 1 || passwordLength > 64 {
+		return fmt.Errorf("password length (%d bytes) must be between 1 and 64 bytes", passwordLength)
+	}
+
+	// Define the NV index with the password length as the size
 	cmd := exec.Command("tpm2_nvdefine",
-		"0x1500016",
-		"--size=64",
+		nvIndex,
+		fmt.Sprintf("--size=%d", passwordLength),
 		"--attributes=ownerread|ownerwrite|authread|authwrite")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("tpm2_nvdefine error: %s", string(output))
@@ -249,9 +281,9 @@ func storePasswordInTPM(password string) error {
 
 	// Write the password to the NV index
 	cmd = exec.Command("tpm2_nvwrite",
-		"0x1500016",
-		"--input=-")
-	cmd.Stdin = createPasswordInput(password)
+		nvIndex,
+		"--input=-") // Use stdin for the input
+	cmd.Stdin = createPasswordInput(password, false)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("tpm2_nvwrite error: %s", string(output))
 	}
@@ -259,9 +291,9 @@ func storePasswordInTPM(password string) error {
 	return nil
 }
 
-// removePasswordFromTPM removes the LUKS password from the TPM.
-func removePasswordFromTPM() error {
-	cmd := exec.Command("tpm2_nvundefine", "0x1500016")
+// removePasswordFromTPM removes the LUKS password from the specified NV index in the TPM.
+func removePasswordFromTPM(nvIndex string) error {
+	cmd := exec.Command("tpm2_nvundefine", nvIndex)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("tpm2_nvundefine error: %s", string(output))
 	}
