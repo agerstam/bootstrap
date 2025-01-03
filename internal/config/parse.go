@@ -1,11 +1,65 @@
 package config
 
 import (
+	"flag"
 	"fmt"
 	"os"
 
 	"gopkg.in/yaml.v3"
 )
+
+func ParseCommandLine() Command {
+	var cmd Command
+
+	// Define flags
+	authorize := flag.Bool("authorize", false, "Authorize with a bootstrap file and configuration")
+	bootstrap := flag.String("bootstrap", "", "Path to bootstrap YAML (required for --authorize)")
+	config := flag.String("config", "", "Path to config YAML")
+	deauthorize := flag.Bool("deauthorize", false, "Deauthorize")
+	mount := flag.Bool("mount", false, "Mount a keyfile")
+	unmount := flag.Bool("unmount", false, "Unmount a configuration")
+	addPersistentMount := flag.Bool("addPersistentMount", false, "Add a persistent mount")
+	removePersistentMount := flag.Bool("removePersistentMount", false, "Remove a persistent mount")
+	keyfile := flag.String("keyfile", "", "Path to keyfile")
+
+	// Parse flags
+	flag.Parse()
+
+	// Validate that --config is provided for all cases
+	if *config == "" {
+		fmt.Println("Error: --config is required for all commands")
+		os.Exit(1)
+	}
+
+	// Determine command based
+	switch {
+	case *authorize:
+		if *bootstrap == "" || *keyfile == "" {
+			fmt.Println("Error: --bootstrap and --keyfile are required for --authorize")
+			os.Exit(1)
+		}
+		cmd.CommandName = "authorize"
+		cmd.Bootstrap = *bootstrap
+	case *deauthorize:
+		cmd.CommandName = "deauthorize"
+	case *mount:
+		cmd.CommandName = "mount"
+	case *unmount:
+		cmd.CommandName = "unmount"
+	case *addPersistentMount:
+		cmd.CommandName = "addPersistentMount"
+	case *removePersistentMount:
+		cmd.CommandName = "removePersistentMount"
+	default:
+		cmd.CommandName = "help"
+	}
+
+	// Assign common flag values to the command structure
+	cmd.Config = *config
+	cmd.Keyfile = *keyfile
+
+	return cmd
+}
 
 func LoadBootstrap(filePath string) (*BootstrapToken, error) {
 	// Open the YML file
@@ -34,7 +88,9 @@ func (cfg *BootstrapToken) Validate() error {
 	return nil
 }
 
-func LoadSettings(filePath string) (*AppConfig, error) {
+func LoadConfig(filePath string) (*AppConfig, error) {
+	fmt.Printf("Bootstrap: Reading settings from file: %s\n", filePath)
+
 	// Parse the YML file
 	var cfg AppConfig
 
@@ -49,25 +105,30 @@ func LoadSettings(filePath string) (*AppConfig, error) {
 	if err := decoder.Decode(&cfg); err != nil {
 		return &cfg, fmt.Errorf("failed to parse YAML file: %w", err)
 	}
+
+	// Validate
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %v", err)
+	}
 	return &cfg, nil
 }
 
 func (cfg *AppConfig) Validate() error {
 
 	if cfg.LUKS.VolumePath == "" {
-		cfg.LUKS.VolumePath = "udm-luks.img" // default value
+		return fmt.Errorf("luks.volume-path is required")
 	}
 	if cfg.LUKS.MapperName == "" {
-		cfg.LUKS.MapperName = "udm-luks" // default value
+		return fmt.Errorf("luks.mapper-name is required")
 	}
 	if cfg.LUKS.MountPoint == "" {
-		cfg.LUKS.MountPoint = "mnt/udm-luks" // default value
+		return fmt.Errorf("luks.mount-point is required")
 	}
 	if cfg.LUKS.PasswordLength == 0 {
-		cfg.LUKS.PasswordLength = 20 // default value
+		return fmt.Errorf("luks.password-length is required")
 	}
 	if cfg.LUKS.Size == 0 {
-		cfg.LUKS.Size = 10 // default value
+		return fmt.Errorf("luks.size (MB) is required")
 	}
 	if cfg.LUKS.User == "" {
 		cfg.LUKS.User = "root" // default value

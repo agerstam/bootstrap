@@ -4,6 +4,13 @@ import (
 	"bootstrap/internal/luks"
 )
 
+type Command struct {
+	CommandName string // Command to execute
+	Config      string // Path to config YAML
+	Bootstrap   string // Path to bootstrap YAML
+	Keyfile     string // Path to keyfile
+}
+
 type BootstrapToken struct {
 	Bootstrap struct {
 		TokenId string `yaml:"token-id"`
@@ -12,8 +19,7 @@ type BootstrapToken struct {
 }
 
 type AppConfig struct {
-	BootstrapFile *string   // Path to the bootstrap file
-	Deauthorize   *bool     // Authorize or Deauthorize the node
-	Verbose       *bool     // Verbose logging
-	LUKS          luks.LUKS `yaml:"luks"` // LUKS configuration
+	Cmd     Command   // Command to execute
+	Verbose *bool     // Verbose logging
+	LUKS    luks.LUKS `yaml:"luks"` // LUKS configuration
 }

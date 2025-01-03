@@ -2,9 +2,9 @@
 luks:
   volumePath: "udm-luks.img"
   mapperName: "udm-luks"
-  mountPoint: "mnt/udm-luks"
+  mountPoint: "/mnt/udm-luks"
   passwordLength: 20
   size: 10
-  useTPM: false
+  useTPM: true
   user: "matsagerstam"
   group: "matsagerstam"
