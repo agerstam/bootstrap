@@ -59,7 +59,7 @@ func main() {
 	case "unmount":
 		unmount(cfg)
 	case "addPersistentMount":
-		addPersistentMount(cfg.Cmd.Config, cfg.Cmd.Keyfile) // TODO
+		addPersistentMount(cfg) // TODO
 	case "removePersistentMount":
 		removePersistentMount(cfg.Cmd.Config) // TODO
 	case "help":
@@ -134,8 +134,13 @@ func unmount(cfg *config.AppConfig) {
 	}
 }
 
-func addPersistentMount(config, keyfile string) {
-	fmt.Println("Adding persistent mount with config:", config, "and keyfile:", keyfile)
+func addPersistentMount(cfg *config.AppConfig) {
+	fmt.Println("Adding persistent mount with config:", cfg.Cmd.Config, "and keyfile:", cfg.Cmd.Keyfile)
+
+	// Add Persistent Mount
+	if err := luks.ConfigurePersistentMount(&cfg.LUKS, cfg.Cmd.Keyfile); err != nil {
+		log.Fatalf("Failed to configure persistent mount: %v", err)
+	}
 }
 
 func removePersistentMount(config string) {
@@ -144,11 +149,6 @@ func removePersistentMount(config string) {
 
 func readBootstrapToken(filePath string) (token *config.BootstrapToken) {
 	fmt.Printf("Bootstrap: Authorizing node using file: %s\n", filePath)
-
-	// Check if the file parameter was provided
-	if filePath == "" {
-		log.Fatal("You must provdie the path to the YML bootstrap file using the -file flat")
-	}
 
 	// Load configuration
 	token, err := config.LoadBootstrap(filePath)

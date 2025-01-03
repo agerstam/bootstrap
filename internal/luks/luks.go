@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -211,16 +212,6 @@ func MountLUKSVolume(cfg *LUKS) error { //mapperName, mountPoint, user, group st
 		return fmt.Errorf("failed to change ownership of mount point: %s\n%s", err, string(output))
 	}
 
-	filesystemUUID, err := getFilesystemUUID(devicePath)
-	fmt.Printf("Filesystem UUID, mappedDevice (%s): %s\n", devicePath, filesystemUUID)
-	if err != nil {
-		return fmt.Errorf("failed to retrieve filesystem UUID: %w", err)
-	}
-
-	//if err := configurePersistentMount(filesystemUUID, mountPoint, user, group); err != nil {
-	//	return fmt.Errorf("failed to configure persistent mount: %w", err)
-	//}
-
 	return nil
 }
 
@@ -250,18 +241,33 @@ func CloseLUKSVolume(mapperName string) error {
 	return nil
 }
 
-// createSparseFile creates a sparse file of the specified size
+// createSparseFile creates a sparse file of the specified size in MB
 func createSparseFile(filePath string, sizeMB int) error {
-	file, err := os.Create(filePath)
+	// Extract the directory path
+	dir := filepath.Dir(filePath)
+	fmt.Printf("Creating directory: %s\n", dir)
+
+	// Ensure the directory exists
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("failed to create directory %s: %w", dir, err)
+	}
+
+	// Create the file with secure permissions
+	file, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
-		return fmt.Errorf("failed to create file: %w", err)
+		return fmt.Errorf("failed to create file %s: %w", filePath, err)
 	}
 	defer file.Close()
 
+	// Calculate the size in bytes
 	sizeBytes := int64(sizeMB) * 1024 * 1024
-	if err := file.Truncate((sizeBytes)); err != nil {
-		return fmt.Errorf("failed to truncate file: %w", err)
+
+	// Truncate the file to the desired size (creates a sparse file)
+	if err := file.Truncate(sizeBytes); err != nil {
+		return fmt.Errorf("failed to truncate file %s: %w", filePath, err)
 	}
+	fmt.Printf("Sparse file truncated to %d MB: %s\n", sizeMB, filePath)
+
 	return nil
 }
 
@@ -375,43 +381,70 @@ func GeneratePassword(length int) (string, error) {
 	return string(password), nil
 }
 
-// ConfigurePersistentMount sets up the necessary entries in /etc/fstab for persistent mount
-func configurePersistentMount(filesystemUUID, mountPoint, user, group string) error {
+func isLUKSMounted(cfg *LUKS) (bool, error) {
+	devicePath := "/dev/mapper/" + cfg.MapperName
 
-	// Prepare the fstab entry
-	fstabEntry := fmt.Sprintf("UUID=%s %s ext4 defaults,uid=%s,gid=%s 0 2\n",
-		filesystemUUID, mountPoint, user, group)
-
-	// Open /etc/fstab for appending
-	file, err := os.OpenFile("/etc/fstab", os.O_APPEND|os.O_WRONLY, 0644)
+	cmd := exec.Command("lsblk", "-o", "MOUNTPOINT", "--noheadings", devicePath)
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to open /etc/fstab: %v", err)
+		return false, fmt.Errorf("failed to list mounted devices: %s, error: %v", output, err)
 	}
-	defer file.Close()
+	return strings.TrimSpace(string(output)) == cfg.MountPoint, nil
+}
 
-	// Write the fstab entry
-	if _, err := file.WriteString(fstabEntry); err != nil {
-		return fmt.Errorf("failed to write to /etc/fstab: %v", err)
+// ConfigurePersistentMount sets up the necessary entries in /etc/fstab for persistent mount
+func ConfigurePersistentMount(cfg *LUKS, keyFile string) error {
+
+	isMounted, err := isLUKSMounted(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to check if LUKS volume is mounted: %v", err)
+	}
+	if !isMounted {
+		return fmt.Errorf("LUKS volume is not mounted")
+	}
+
+	// Update /etc/crypttab
+	var crypttabEntry string
+	if cfg.UseTPM {
+		crypttabEntry = fmt.Sprintf("%s %s none luks,keyscript=/usr/local/bin/tpm-luks-keyscript %s\n", cfg.MapperName, cfg.VolumePath, DefaultNVIndex)
+	} else {
+		crypttabEntry = fmt.Sprintf("%s %s %s luks\n", cfg.MapperName, cfg.VolumePath, keyFile)
+	}
+
+	if err := appendToFile("/etc/crypttab", crypttabEntry); err != nil {
+		return fmt.Errorf("failed to update /etc/crypttab: %v", err)
+	}
+
+	devicePath := "/dev/mapper/" + cfg.MapperName
+	filesystemUUID, err := getFilesystemUUID(devicePath)
+	fmt.Printf("Filesystem UUID, mappedDevice (%s): %s\n", devicePath, filesystemUUID)
+	if err != nil {
+		return fmt.Errorf("failed to retrieve filesystem UUID: %w", err)
+	}
+
+	// Update /etc/fstab
+	fstabEntry := fmt.Sprintf("UUID=%s %s ext4 defaults,nofail,x-systemd.requires=cryptsetup@%s.service 0 2\n",
+		filesystemUUID, cfg.MountPoint, cfg.MapperName)
+
+	if err := appendToFile("/etc/fstab", fstabEntry); err != nil {
+		return fmt.Errorf("failed to update /etc/fstab: %v", err)
 	}
 
 	return nil
 }
 
-// GetFilesystemUUID retrieves the UUID of the filesystem for a given device.
 func getFilesystemUUID(devicePath string) (string, error) {
 
 	log.Printf("Getting filesystem UUID for device: %s\n", devicePath)
 	cmd := exec.Command("blkid", "-s", "UUID", "-o", "value", devicePath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("failed to retrieve filesystem UUID: %s\n%s", err, string(output))
+		return "", fmt.Errorf("blkid command failed: %s, output: %s", err, string(output))
 	}
-
 	uuid := strings.TrimSpace(string(output))
 	if uuid == "" {
 		return "", fmt.Errorf("no UUID found for device: %s", devicePath)
 	}
-
 	return uuid, nil
 }
 
