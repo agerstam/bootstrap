@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"os"
 	"os/exec"
+	"strings"
 )
 
 type LUKS struct {
@@ -16,6 +17,8 @@ type LUKS struct {
 	PasswordLength int    `yaml:"passwordLength"`
 	Size           int    `yaml:"size"`
 	UseTPM         bool   `yaml:"useTPM"`
+	User           string `yaml:"user"`
+	Group          string `yaml:"group"`
 	Password       string `yaml:"-"`
 }
 
@@ -32,6 +35,7 @@ func SetupLUKSVolume(cfg *LUKS) error {
 	if err != nil {
 		log.Fatalf("Failed to generate password: %v", err)
 	}
+	cfg.Password = password
 
 	fmt.Println("Bootstrap: Creating LUKS volume ...")
 	if err := CreateLUKSVolume(cfg.VolumePath, password, cfg.Size, cfg.UseTPM); err != nil {
@@ -39,7 +43,7 @@ func SetupLUKSVolume(cfg *LUKS) error {
 	}
 
 	fmt.Println("Bootstrap: Opening LUKS volume ...")
-	if err := OpenLUKSVolume(cfg.VolumePath, password, cfg.MapperName); err != nil {
+	if err := OpenLUKSVolume(cfg); err != nil {
 		log.Fatalf("Failed to open LUKS volume: %v", err)
 	}
 
@@ -49,9 +53,10 @@ func SetupLUKSVolume(cfg *LUKS) error {
 	}
 
 	fmt.Println("Bootstrap: Mounting LUKS volume ...")
-	if err := mountLUKSVolume(cfg.MapperName, cfg.MountPoint); err != nil {
+	if err := MountLUKSVolume(cfg.MapperName, cfg.MountPoint, cfg.User, cfg.Group); err != nil {
 		log.Fatalf("Failed to mount LUKS volume: %v", err)
 	}
+
 	return nil
 }
 
@@ -61,12 +66,12 @@ func UnmountAndCloseLUKSVolume(cfg *LUKS) error {
 	}
 
 	fmt.Println("Unmounting LUKS volume...")
-	if err := unmountLUKSVolume(cfg.MountPoint); err != nil {
+	if err := UnmountLUKSVolume(cfg.MountPoint); err != nil {
 		log.Printf("Failed to unmount LUKS volume: %v", err)
 	}
 
 	fmt.Println("Closing LUKS volume...")
-	if err := closeLUKSVolume(cfg.MapperName); err != nil {
+	if err := CloseLUKSVolume(cfg.MapperName); err != nil {
 		log.Printf("Failed to close LUKS volume: %v", err)
 	}
 
@@ -107,21 +112,21 @@ func CreateLUKSVolume(filePath string, password string, sizeMB int, useTPM bool)
 }
 
 // OpenLUKSVolume opens an existing LUKS volume
-func OpenLUKSVolume(volumePath, password, mapperName string) error {
+func OpenLUKSVolume(cfg *LUKS) error {
 
-	mappedDevice := "/dev/mapper/" + mapperName
+	mappedDevice := "/dev/mapper/" + cfg.MapperName
 
 	// Check if the mapping already exists
 	if _, err := os.Stat(mappedDevice); err == nil {
 		// If the device exists, close it first
-		cmd := exec.Command("cryptsetup", "luksClose", mapperName)
+		cmd := exec.Command("cryptsetup", "luksClose", cfg.MapperName)
 		if output, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("failed to close existing mapping: %s\n%s", err, string(output))
 		}
 	}
 
-	cmd := exec.Command("cryptsetup", "luksOpen", volumePath, mapperName)
-	cmd.Stdin = createPasswordInput(password, true)
+	cmd := exec.Command("cryptsetup", "luksOpen", cfg.VolumePath, cfg.MapperName)
+	cmd.Stdin = createPasswordInput(cfg.Password, true)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to open LUKS volume: %s", output)
@@ -145,35 +150,35 @@ func FormatLUKSVolume(mapperName string) error {
 // CleanupLUKSVolume unmounts and closes the LUKS volume and removes the mount point
 func RemoveLUKSVolume(cfg *LUKS) error {
 	fmt.Println("Unmounting LUKS volume...")
-	if err := unmountLUKSVolume(cfg.MountPoint); err != nil {
-		return fmt.Errorf("failed to unmount LUKS volume: %w", err)
+	if err := UnmountLUKSVolume(cfg.MountPoint); err != nil {
+		log.Printf("failed to unmount LUKS volume: %s", err)
 	}
 
 	fmt.Println("Closing LUKS volume...")
-	if err := closeLUKSVolume(cfg.MapperName); err != nil {
-		return fmt.Errorf("failed to close LUKS volume: %w", err)
+	if err := CloseLUKSVolume(cfg.MapperName); err != nil {
+		log.Printf("failed to close LUKS volume: %s", err)
 	}
 
 	fmt.Println("Removing mount directory...")
 	if err := os.RemoveAll(cfg.MountPoint); err != nil {
-		return fmt.Errorf("failed to remove mount directory: %w", err)
+		log.Printf("failed to remove mount directory: %s", err)
 	}
 
 	fmt.Println("Removing LUKS image file ...")
 	if err := os.Remove(cfg.VolumePath); err != nil {
-		return fmt.Errorf("failed to remove LUKS image file: %w", err)
+		log.Printf("failed to remove LUKS image file: %s", err)
 	}
 	if cfg.UseTPM {
 		fmt.Println("Removing password from TPM ...")
 		if err := removePasswordFromTPM(DefaultNVIndex); err != nil {
-			return fmt.Errorf("failed to remove password from TPM: %w", err)
+			log.Printf("failed to remove password from TPM: %s", err)
 		}
 	}
 	return nil
 }
 
 // MountLUKSVolume mounts the mapped LUKS volume to the specified mount point
-func mountLUKSVolume(mapperName, mountPoint string) error {
+func MountLUKSVolume(mapperName, mountPoint, user, group string) error {
 	devicePath := "/dev/mapper/" + mapperName
 	if err := os.MkdirAll(mountPoint, 0755); err != nil {
 		return fmt.Errorf("failed to create mount point: %w", err)
@@ -184,11 +189,31 @@ func mountLUKSVolume(mapperName, mountPoint string) error {
 	if err != nil {
 		return fmt.Errorf("failed to mount LUKS volume: %s", output)
 	}
+
+	// Change ownership of the mount point
+	if user == "" || group == "" {
+		return fmt.Errorf(("user and group must be specified"))
+	}
+	cmd = exec.Command("chown", fmt.Sprintf("%s:%s", user, group), mountPoint)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to change ownership of mount point: %s\n%s", err, string(output))
+	}
+
+	filesystemUUID, err := getFilesystemUUID(devicePath)
+	fmt.Printf("Filesystem UUID, mappedDevice (%s): %s\n", devicePath, filesystemUUID)
+	if err != nil {
+		return fmt.Errorf("failed to retrieve filesystem UUID: %w", err)
+	}
+
+	//if err := configurePersistentMount(filesystemUUID, mountPoint, user, group); err != nil {
+	//	return fmt.Errorf("failed to configure persistent mount: %w", err)
+	//}
+
 	return nil
 }
 
 // unmountLUKSVolume unmounts the mapped LUKS volume
-func unmountLUKSVolume(mountPoint string) error {
+func UnmountLUKSVolume(mountPoint string) error {
 	cmd := exec.Command("umount", mountPoint)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -204,7 +229,7 @@ func unmountLUKSVolume(mountPoint string) error {
 }
 
 // CloseLUKSVolume closes the mapped LUKS volume
-func closeLUKSVolume(mapperName string) error {
+func CloseLUKSVolume(mapperName string) error {
 	cmd := exec.Command("cryptsetup", "luksClose", mapperName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -330,4 +355,44 @@ func GeneratePassword(length int) (string, error) {
 	}
 
 	return string(password), nil
+}
+
+// ConfigurePersistentMount sets up the necessary entries in /etc/fstab for persistent mount
+func configurePersistentMount(filesystemUUID, mountPoint, user, group string) error {
+
+	// Prepare the fstab entry
+	fstabEntry := fmt.Sprintf("UUID=%s %s ext4 defaults,uid=%s,gid=%s 0 2\n",
+		filesystemUUID, mountPoint, user, group)
+
+	// Open /etc/fstab for appending
+	file, err := os.OpenFile("/etc/fstab", os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open /etc/fstab: %v", err)
+	}
+	defer file.Close()
+
+	// Write the fstab entry
+	if _, err := file.WriteString(fstabEntry); err != nil {
+		return fmt.Errorf("failed to write to /etc/fstab: %v", err)
+	}
+
+	return nil
+}
+
+// GetFilesystemUUID retrieves the UUID of the filesystem for a given device.
+func getFilesystemUUID(devicePath string) (string, error) {
+
+	log.Printf("Getting filesystem UUID for device: %s\n", devicePath)
+	cmd := exec.Command("blkid", "-s", "UUID", "-o", "value", devicePath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to retrieve filesystem UUID: %s\n%s", err, string(output))
+	}
+
+	uuid := strings.TrimSpace(string(output))
+	if uuid == "" {
+		return "", fmt.Errorf("no UUID found for device: %s", devicePath)
+	}
+
+	return uuid, nil
 }

@@ -6,3 +6,5 @@ luks:
   passwordLength: 20
   size: 10
   useTPM: false
+  user: "matsagerstam"
+  group: "matsagerstam"

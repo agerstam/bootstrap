@@ -69,8 +69,11 @@ func (cfg *AppConfig) Validate() error {
 	if cfg.LUKS.Size == 0 {
 		cfg.LUKS.Size = 10 // default value
 	}
-	if cfg.LUKS.UseTPM == false {
-		cfg.LUKS.UseTPM = true // default value
+	if cfg.LUKS.User == "" {
+		cfg.LUKS.User = "root" // default value
+	}
+	if cfg.LUKS.Group == "" {
+		cfg.LUKS.Group = "root" // default value
 	}
 	return nil
 }
