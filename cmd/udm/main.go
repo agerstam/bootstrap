@@ -7,10 +7,12 @@ import (
 	"io"
 	"log"
 	"os"
+
+	"github.com/jedib0t/go-pretty/v6/table"
 )
 
 func printHelp() {
-	fmt.Println("Usage: configapp [COMMAND] [OPTIONS]")
+	fmt.Println("Usage: bootstrap [COMMAND] [OPTIONS]")
 	fmt.Println("\nCommands:")
 	fmt.Println("  --authorize --bootstrap=file --config=config.yml --keyfile=key.bin")
 	fmt.Println("                                  Authorize with a required bootstrap file and output keyfile")
@@ -30,7 +32,6 @@ func printHelp() {
 	fmt.Println("\nRun 'configapp --help' to display this help message.")
 }
 func main() {
-
 	// Parse command line flags
 	cmd := config.ParseCommandLine()
 
@@ -40,13 +41,7 @@ func main() {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
-	fmt.Printf("LUKS Config: \n")
-	fmt.Printf("   Volume Path: %s \n", cfg.LUKS.VolumePath)
-	fmt.Printf("   Mapper Name: %s \n", cfg.LUKS.MapperName)
-	fmt.Printf("   Mount Point: %s \n", cfg.LUKS.MountPoint)
-	fmt.Printf("   Password Length: %d \n", cfg.LUKS.PasswordLength)
-	fmt.Printf("   Size: %d \n", cfg.LUKS.Size)
-	fmt.Printf("   Use TPM: %t \n", cfg.LUKS.UseTPM)
+	printLUKSConfig(cfg)
 	cfg.Cmd = cmd
 
 	switch cfg.Cmd.CommandName {
@@ -59,9 +54,9 @@ func main() {
 	case "unmount":
 		unmount(cfg)
 	case "addPersistentMount":
-		addPersistentMount(cfg) // TODO
+		addPersistentMount(cfg)
 	case "removePersistentMount":
-		removePersistentMount(cfg.Cmd.Config) // TODO
+		removePersistentMount(cfg)
 	case "help":
 		printHelp()
 	default:
@@ -72,8 +67,7 @@ func main() {
 
 // Authorize and setup the LUKS volume
 func authorize(cfg *config.AppConfig) {
-	fmt.Println("Authorizing with config file:", cfg.Cmd.Config)
-	fmt.Println("Bootstrap file:", cfg.Cmd.Bootstrap)
+	fmt.Println("Authorizing with config:", cfg.Cmd.Config)
 
 	// Read and parse the bootstrap token file
 	readBootstrapToken(cfg.Cmd.Bootstrap)
@@ -85,9 +79,9 @@ func authorize(cfg *config.AppConfig) {
 
 	if !cfg.LUKS.UseTPM {
 		writeKeyToFile(cfg.Cmd.Keyfile, cfg.LUKS.Password)
-		fmt.Println("Bootstrap: LUKS volume created, generated keyfile:", cfg.Cmd.Keyfile)
+		fmt.Println("LUKS volume created, generated keyfile:", cfg.Cmd.Keyfile)
 	} else {
-		fmt.Println("Bootstrap: LUKS volume created, using TPM for key storage NVIndex =", luks.DefaultNVIndex)
+		fmt.Println("LUKS volume created, using TPM for key storage NVIndex =", luks.DefaultNVIndex)
 	}
 }
 
@@ -138,22 +132,26 @@ func addPersistentMount(cfg *config.AppConfig) {
 	fmt.Println("Adding persistent mount with config:", cfg.Cmd.Config, "and keyfile:", cfg.Cmd.Keyfile)
 
 	// Add Persistent Mount
-	if err := luks.ConfigurePersistentMount(&cfg.LUKS, cfg.Cmd.Keyfile); err != nil {
+	if err := luks.AddPersistentMount(&cfg.LUKS, cfg.Cmd.Keyfile); err != nil {
 		log.Fatalf("Failed to configure persistent mount: %v", err)
 	}
 }
 
-func removePersistentMount(config string) {
-	fmt.Println("Removing persistent mount with config:", config)
+func removePersistentMount(cfg *config.AppConfig) {
+	fmt.Println("Removing persistent mount with config:", cfg.Cmd.Config)
+
+	// Remove Persistent Mount
+	if err := luks.RemovePersistentMount(&cfg.LUKS); err != nil {
+		log.Fatalf("Failed to remove persistent mount: %v", err)
+	}
 }
 
 func readBootstrapToken(filePath string) (token *config.BootstrapToken) {
-	fmt.Printf("Bootstrap: Authorizing node using file: %s\n", filePath)
 
-	// Load configuration
+	// Load bootstrap from file
 	token, err := config.LoadBootstrap(filePath)
 	if err != nil {
-		log.Fatalf("Failed to load configuration: %v", err)
+		log.Fatalf("Failed to load bootstrap file: %v", err)
 	}
 
 	// Validate
@@ -161,10 +159,7 @@ func readBootstrapToken(filePath string) (token *config.BootstrapToken) {
 		log.Fatalf("Invalid configuration: %v", err)
 	}
 
-	fmt.Printf("Bootstrap Token: \n")
-	fmt.Printf("   Token ID: %s\n", token.Bootstrap.TokenId)
-	fmt.Printf("   Version: %s\n", token.Bootstrap.Version)
-
+	printBootstrapToken(token)
 	return token
 }
 
@@ -213,4 +208,32 @@ func readKeyFromFile(keyfile string) (string, error) {
 	}
 
 	return string(keyData), nil
+}
+
+func printLUKSConfig(cfg *config.AppConfig) {
+
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.AppendHeader(table.Row{"Property", "Value"})
+	t.AppendRows([]table.Row{
+		{"Volume Path", cfg.LUKS.VolumePath},
+		{"Mapper Name", cfg.LUKS.MapperName},
+		{"Mount Point", cfg.LUKS.MountPoint},
+		{"Password Length", cfg.LUKS.PasswordLength},
+		{"Size", cfg.LUKS.Size},
+		{"Use TPM", cfg.LUKS.UseTPM},
+	})
+	t.Render()
+}
+
+func printBootstrapToken(token *config.BootstrapToken) {
+
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.AppendHeader(table.Row{"Property", "Value"})
+	t.AppendRows([]table.Row{
+		{"Token ID", token.Bootstrap.TokenId},
+		{"Version", token.Bootstrap.Version},
+	})
+	t.Render()
 }

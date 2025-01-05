@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
@@ -25,17 +26,21 @@ func ParseCommandLine() Command {
 	// Parse flags
 	flag.Parse()
 
-	// Validate that --config is provided for all cases
+	// If no --config is provided, try loading config.yml from the current directory
 	if *config == "" {
-		fmt.Println("Error: --config is required for all commands")
-		os.Exit(1)
+		defaultConfigPath := filepath.Join(getCurrentDirectory(), "config.yml")
+		if _, err := os.Stat(defaultConfigPath); os.IsNotExist(err) {
+			fmt.Println("Error: --config is required and no default config.yml found in the current directory")
+			os.Exit(1)
+		}
+		*config = defaultConfigPath
 	}
 
 	// Determine command based
 	switch {
 	case *authorize:
-		if *bootstrap == "" || *keyfile == "" {
-			fmt.Println("Error: --bootstrap and --keyfile are required for --authorize")
+		if *keyfile == "" {
+			fmt.Println("Error: --keyfile is required for --authorize")
 			os.Exit(1)
 		}
 		cmd.CommandName = "authorize"
@@ -61,23 +66,36 @@ func ParseCommandLine() Command {
 	return cmd
 }
 
+// LoadBootstrap attempts to load the BootstrapToken from an environment variable,
+// then falls back to a file if the environment variable is not set.
 func LoadBootstrap(filePath string) (*BootstrapToken, error) {
-	// Open the YML file
+	var token BootstrapToken
+
+	// Attempt to load from the environment variable
+	envData := os.Getenv("BOOTSTRAP_YML")
+	fmt.Println("envData:", envData)
+	if envData != "" {
+		if err := yaml.Unmarshal([]byte(envData), &token); err != nil {
+			return nil, fmt.Errorf("failed to parse YAML from environment variable: %w", err)
+		}
+		return &token, nil
+	}
+
+	// Fallback to loading from the file
 	file, err := os.Open(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %w", err)
 	}
 	defer file.Close()
 
-	// Parse the YML file
-	var token BootstrapToken
+	// Parse the YAML file
 	decoder := yaml.NewDecoder(file)
 	if err := decoder.Decode(&token); err != nil {
 		return nil, fmt.Errorf("failed to parse YAML file: %w", err)
 	}
+
 	return &token, nil
 }
-
 func (cfg *BootstrapToken) Validate() error {
 	if cfg.Bootstrap.TokenId == "" {
 		return fmt.Errorf("bootstrap.token-id is required")
@@ -89,7 +107,7 @@ func (cfg *BootstrapToken) Validate() error {
 }
 
 func LoadConfig(filePath string) (*AppConfig, error) {
-	fmt.Printf("Bootstrap: Reading settings from file: %s\n", filePath)
+	fmt.Printf("Reading settings from file: %s\n", filePath)
 
 	// Parse the YML file
 	var cfg AppConfig
@@ -137,4 +155,14 @@ func (cfg *AppConfig) Validate() error {
 		cfg.LUKS.Group = "root" // default value
 	}
 	return nil
+}
+
+// Helper function to get the current directory of the executable
+func getCurrentDirectory() string {
+	execPath, err := os.Executable()
+	if err != nil {
+		fmt.Printf("Error determining executable path: %v\n", err)
+		os.Exit(1)
+	}
+	return filepath.Dir(execPath)
 }

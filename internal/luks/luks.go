@@ -40,22 +40,22 @@ func SetupLUKSVolume(cfg *LUKS) error {
 	}
 	cfg.Password = password
 
-	fmt.Println("Bootstrap: Creating LUKS volume ...")
+	fmt.Println("Creating LUKS volume ...")
 	if err := CreateLUKSVolume(cfg.VolumePath, password, cfg.Size, cfg.UseTPM); err != nil {
 		log.Fatalf("Failed to create LUKS volume: %v", err)
 	}
 
-	fmt.Println("Bootstrap: Opening LUKS volume ...")
+	fmt.Println("Opening LUKS volume ...")
 	if err := OpenLUKSVolume(cfg); err != nil {
 		log.Fatalf("Failed to open LUKS volume: %v", err)
 	}
 
-	fmt.Println("Bootstrap: Formatting LUKS volume ...")
+	fmt.Println("Formatting LUKS volume ...")
 	if err := FormatLUKSVolume(cfg.MapperName); err != nil {
 		log.Fatalf("Failed to format LUKS volume: %v", err)
 	}
 
-	fmt.Println("Bootstrap: Mounting LUKS volume ...")
+	fmt.Println("Mounting LUKS volume ...")
 	if err := MountLUKSVolume(cfg); err != nil {
 		log.Fatalf("Failed to mount LUKS volume: %v", err)
 	}
@@ -245,7 +245,6 @@ func CloseLUKSVolume(mapperName string) error {
 func createSparseFile(filePath string, sizeMB int) error {
 	// Extract the directory path
 	dir := filepath.Dir(filePath)
-	fmt.Printf("Creating directory: %s\n", dir)
 
 	// Ensure the directory exists
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -266,7 +265,6 @@ func createSparseFile(filePath string, sizeMB int) error {
 	if err := file.Truncate(sizeBytes); err != nil {
 		return fmt.Errorf("failed to truncate file %s: %w", filePath, err)
 	}
-	fmt.Printf("Sparse file truncated to %d MB: %s\n", sizeMB, filePath)
 
 	return nil
 }
@@ -392,8 +390,8 @@ func isLUKSMounted(cfg *LUKS) (bool, error) {
 	return strings.TrimSpace(string(output)) == cfg.MountPoint, nil
 }
 
-// ConfigurePersistentMount sets up the necessary entries in /etc/fstab for persistent mount
-func ConfigurePersistentMount(cfg *LUKS, keyFile string) error {
+// AddPersistentMount sets up the necessary entries in /etc/fstab for persistent mount
+func AddPersistentMount(cfg *LUKS, keyFile string) error {
 
 	isMounted, err := isLUKSMounted(cfg)
 	if err != nil {
@@ -406,7 +404,8 @@ func ConfigurePersistentMount(cfg *LUKS, keyFile string) error {
 	// Update /etc/crypttab
 	var crypttabEntry string
 	if cfg.UseTPM {
-		crypttabEntry = fmt.Sprintf("%s %s none luks,keyscript=/usr/local/bin/tpm-luks-keyscript %s\n", cfg.MapperName, cfg.VolumePath, DefaultNVIndex)
+		crypttabEntry = fmt.Sprintf("%s %s none luks,keyscript=/usr/local/bin/tpm-luks-keyscript.sh %s %d\n",
+			cfg.MapperName, cfg.VolumePath, DefaultNVIndex, cfg.PasswordLength)
 	} else {
 		crypttabEntry = fmt.Sprintf("%s %s %s luks\n", cfg.MapperName, cfg.VolumePath, keyFile)
 	}
@@ -433,10 +432,35 @@ func ConfigurePersistentMount(cfg *LUKS, keyFile string) error {
 	return nil
 }
 
+// RemovePersistentMount removes the entries in /etc/fstab for persistent mount
+func RemovePersistentMount(cfg *LUKS) error {
+
+	isMounted, err := isLUKSMounted(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to check if LUKS volume is mounted: %v", err)
+	}
+	if isMounted {
+		return fmt.Errorf("LUKS volume is mounted, please unmount first")
+	}
+
+	// Remove the entry from /etc/fstab
+	if err := removeLineFromFile("/etc/fstab", cfg.MountPoint); err != nil {
+		return fmt.Errorf("failed to remove entry from /etc/fstab: %v", err)
+	}
+
+	// Remove the entry from /etc/crypttab
+	if err := removeLineFromFile("/etc/crypttab", cfg.MapperName); err != nil {
+		return fmt.Errorf("failed to remove entry from /etc/crypttab: %v", err)
+	}
+
+	return nil
+}
+
 func getFilesystemUUID(devicePath string) (string, error) {
 
+	// NOTE: the 'probe' option ensures we are getting the correct UUID
 	log.Printf("Getting filesystem UUID for device: %s\n", devicePath)
-	cmd := exec.Command("blkid", "-s", "UUID", "-o", "value", devicePath)
+	cmd := exec.Command("blkid", "-p", "-s", "UUID", "-o", "value", devicePath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("blkid command failed: %s, output: %s", err, string(output))
@@ -448,40 +472,54 @@ func getFilesystemUUID(devicePath string) (string, error) {
 	return uuid, nil
 }
 
-// removeLineFromFile removes lines containing the specified token from the given file.
 func removeLineFromFile(filePath, token string) error {
+	// Open the original file for reading
 	file, err := os.Open(filePath)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to open file %s: %v", filePath, err)
 	}
 	defer file.Close()
 
-	var lines []string
+	// Create a temporary file in the same directory as the original file
+	tempFilePath := filePath + ".tmp"
+	tempFile, err := os.Create(tempFilePath)
+	if err != nil {
+		return fmt.Errorf("failed to create temporary file: %v", err)
+	}
+	defer func() {
+		tempFile.Close()
+		os.Remove(tempFilePath) // Clean up the temp file in case of an error
+	}()
+
 	scanner := bufio.NewScanner(file)
+	writer := bufio.NewWriter(tempFile)
+
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.Contains(line, token) {
-			lines = append(lines, line)
+			if _, err := writer.WriteString(line + "\n"); err != nil {
+				return fmt.Errorf("failed to write to temporary file: %v", err)
+			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return err
-	}
-
-	file, err = os.OpenFile(filePath, os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	writer := bufio.NewWriter(file)
-	for _, line := range lines {
-		if _, err := writer.WriteString(line + "\n"); err != nil {
-			return err
-		}
+		return fmt.Errorf("error reading file %s: %v", filePath, err)
 	}
 	if err := writer.Flush(); err != nil {
-		return err
+		return fmt.Errorf("failed to flush data to temporary file: %v", err)
+	}
+
+	// Close the files before renaming
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temporary file: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("failed to close original file: %v", err)
+	}
+
+	// Replace the original file with the temporary file
+	if err := os.Rename(tempFilePath, filePath); err != nil {
+		return fmt.Errorf("failed to replace original file with temporary file: %v", err)
 	}
 
 	return nil
