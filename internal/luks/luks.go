@@ -108,7 +108,7 @@ func UnmountAndCloseLUKSVolume(cfg *LUKS) error {
 // CreateLUKSVolume set up a new LUKS volume with the specified size and password
 func CreateLUKSVolume(filePath string, password []byte, sizeMB int, useTPM bool) error {
 
-	if sizeMB < 1 || sizeMB > 10 {
+	if sizeMB < 1 || sizeMB > 64 {
 		return fmt.Errorf("size must be between 1MB and 10MB")
 	}
 
@@ -311,10 +311,22 @@ func luksFormat(filePath string, password []byte) error {
 	}
 
 	// Execute the cryptsetup luksFormat command with --key-file
-	cmd := exec.Command(
+	/*	cmd := exec.Command(
 		"cryptsetup",
 		"luksFormat",
 		"--type=luks1",
+		"--key-file", tmpFile.Name(),
+		filePath,
+	)*/
+
+	cmd := exec.Command(
+		"cryptsetup",
+		"luksFormat",
+		"--type=luks2",
+		"--batch-mode",
+		"--pbkdf-memory=2097152",
+		"--pbkdf-parallel=8",
+		"--cipher=aes-xts-plain64",
 		"--key-file", tmpFile.Name(),
 		filePath,
 	)
