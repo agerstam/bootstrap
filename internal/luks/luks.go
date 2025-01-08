@@ -2,10 +2,12 @@ package luks
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
-	"math/big"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,11 +23,23 @@ type LUKS struct {
 	UseTPM         bool   `yaml:"useTPM"`
 	User           string `yaml:"user"`
 	Group          string `yaml:"group"`
-	Password       string `yaml:"-"`
-	nvIndex        string `yaml:"-"`
+	Password       []byte `yaml:"-"`
 } // `yaml:"luks"`
 
 const DefaultNVIndex = "0x1500016"
+
+// checkTPM2Availability determines if TPM 2.0 is available on the system.
+func checkTPM2Availability() (bool, error) {
+	const tpm2Device = "/dev/tpmrm0" // Device file for TPM 2.0
+
+	if _, err := os.Stat(tpm2Device); err == nil {
+		return true, nil // TPM 2.0 is available
+	} else if errors.Is(err, os.ErrNotExist) {
+		return false, nil // TPM 2.0 is not available
+	} else {
+		return false, fmt.Errorf("error accessing TPM 2.0 device: %w", err)
+	}
+}
 
 // SetupLUKSVolume sets up and mounts a new LUKS volume
 func SetupLUKSVolume(cfg *LUKS) error {
@@ -33,8 +47,18 @@ func SetupLUKSVolume(cfg *LUKS) error {
 	if cfg == nil {
 		return fmt.Errorf("LUKS configuration is nil")
 	}
+
+	if cfg.UseTPM {
+		isTPM2Available, err := checkTPM2Availability()
+		if err != nil {
+			log.Printf("error checking TPM 2.0 availability: %v\n", err)
+		} else if !isTPM2Available {
+			return fmt.Errorf("TPM 2.0 not availabile on this system, reconfigure to use keyfile")
+		}
+	}
+
 	// Generate high entropy password
-	password, err := GeneratePassword(cfg.PasswordLength)
+	password, err := GenerateLUKSKey(cfg.PasswordLength)
 	if err != nil {
 		log.Fatalf("Failed to generate password: %v", err)
 	}
@@ -82,7 +106,7 @@ func UnmountAndCloseLUKSVolume(cfg *LUKS) error {
 }
 
 // CreateLUKSVolume set up a new LUKS volume with the specified size and password
-func CreateLUKSVolume(filePath string, password string, sizeMB int, useTPM bool) error {
+func CreateLUKSVolume(filePath string, password []byte, sizeMB int, useTPM bool) error {
 
 	if sizeMB < 1 || sizeMB > 10 {
 		return fmt.Errorf("size must be between 1MB and 10MB")
@@ -270,7 +294,42 @@ func createSparseFile(filePath string, sizeMB int) error {
 }
 
 // luksFormat formats the file as a LUKS volume
-func luksFormat(filePath, password string) error {
+func luksFormat(filePath string, password []byte) error {
+	// Create a temporary file to store the password
+	tmpFile, err := os.CreateTemp("", "luks-password-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary file: %w", err)
+	}
+	defer os.Remove(tmpFile.Name()) // Ensure the file is removed after use
+
+	// Write the password to the temporary file
+	if _, err := tmpFile.Write(password); err != nil {
+		return fmt.Errorf("failed to write password to temporary file: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temporary file: %w", err)
+	}
+
+	// Execute the cryptsetup luksFormat command with --key-file
+	cmd := exec.Command(
+		"cryptsetup",
+		"luksFormat",
+		"--type=luks1",
+		"--key-file", tmpFile.Name(),
+		filePath,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to format LUKS volume: %s, error: %w", output, err)
+	}
+
+	return nil
+}
+
+/*
+// luksFormat formats the file as a LUKS volume
+func luksFormat(filePath string, password []byte) error {
 	cmd := exec.Command(
 		"cryptsetup",
 		"luksFormat",
@@ -285,17 +344,18 @@ func luksFormat(filePath, password string) error {
 	}
 	return nil
 }
+*/
 
 // createPasswordInput creates a pipe to provide the password as input.
-func createPasswordInput(password string, addNewline bool) *os.File {
+func createPasswordInput(password []byte, addNewline bool) *os.File {
 	r, w, _ := os.Pipe()
 
 	go func() {
 		defer w.Close()
 		if addNewline {
-			w.WriteString(password + "\n")
+			w.Write(append(password, '\n'))
 		} else {
-			w.WriteString(password)
+			w.Write(password)
 		}
 	}()
 
@@ -303,18 +363,18 @@ func createPasswordInput(password string, addNewline bool) *os.File {
 }
 
 // storePasswordInTPM stores the LUKS password securely in the TPM.
-func storePasswordInTPM(password string, nvIndex string) error {
+func storePasswordInTPM(password []byte, nvIndex string) error {
 
 	// Validate password length
-	passwordLength := len(password)
-	if passwordLength < 1 || passwordLength > 64 {
-		return fmt.Errorf("password length (%d bytes) must be between 1 and 64 bytes", passwordLength)
+	//passwordLength := len(password)
+	if len(password) < 1 || len(password) > 64 {
+		return fmt.Errorf("password length (%d bytes) must be between 1 and 64 bytes", len(password))
 	}
 
 	// Define the NV index with the password length as the size
 	cmd := exec.Command("tpm2_nvdefine",
 		nvIndex,
-		fmt.Sprintf("--size=%d", passwordLength),
+		fmt.Sprintf("--size=%d", len(password)),
 		"--attributes=ownerread|ownerwrite|authread|authwrite")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("tpm2_nvdefine error: %s", string(output))
@@ -342,7 +402,7 @@ func removePasswordFromTPM(nvIndex string) error {
 }
 
 // retrievePasswordFromTPM retrieves the LUKS password from the TPM for the specified NV index and size.
-func retrievePasswordFromTPM(nvindex string, size int) (string, error) {
+func retrievePasswordFromTPM(nvindex string, size int) ([]byte, error) {
 
 	// Construct the tpm2_nvread command with the provided NV index and size
 	cmd := exec.Command("tpm2_nvread", nvindex, fmt.Sprintf("--size=%d", size))
@@ -350,33 +410,62 @@ func retrievePasswordFromTPM(nvindex string, size int) (string, error) {
 	// Execute the command and capture the output
 	output, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("tpm2_nvread error for index %s: %w", nvindex, err)
+		return nil, fmt.Errorf("tpm2_nvread error for index %s: %w", nvindex, err)
 	}
 
 	// Return the output as a string
-	return string(output), nil
+	return output, nil
 }
 
-func GeneratePassword(length int) (string, error) {
-	if length <= 0 || length > 64 {
-		return "", fmt.Errorf("password length must be between 1 and 64")
+// GenerateLUKSKey generates a random key of the specified length in bytes,
+// using tpm2_getrandom if available, otherwise falling back to crypto/rand.
+func GenerateLUKSKey(length int) ([]byte, error) {
+
+	fmt.Println("TESTING")
+	if length <= 8 {
+		return nil, fmt.Errorf("key length must be greater than 0")
 	}
 
-	// Define the character set for the password.
-	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+[]{}|;:,.<>?/"
-	charsetLength := big.NewInt(int64(len(charset)))
-
-	// Generate the password.
-	password := make([]byte, length)
-	for i := 0; i < length; i++ {
-		charIndex, err := rand.Int(rand.Reader, charsetLength)
-		if err != nil {
-			return "", fmt.Errorf("failed to generate random character: %w", err)
+	// Check if tpm2_getrandom is available.
+	isTPMAvailable, err := checkTPM2Availability()
+	if err != nil {
+		log.Printf("Error when checking TPM device")
+	} else if isTPMAvailable {
+		key, err := getRandomBytesFromTPM2(length)
+		if err == nil {
+			return key, nil
 		}
-		password[i] = charset[charIndex.Int64()]
+		fmt.Printf("Failed to use TPM: %v. Falling back to crypto/rand.\n", err)
+	}
+	// Fallback to crypto/rand.
+	key := make([]byte, length)
+	_, err = rand.Read(key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate random key using crypto/rand: %w", err)
+	}
+	fmt.Println("Lenght: %d, Content", length, hex.EncodeToString(key))
+	return key, nil
+}
+
+// getRandomBytesFromTPM2 fetches the specified number of random bytes using tpm2_getrandom.
+func getRandomBytesFromTPM2(size int) ([]byte, error) {
+
+	// Execute the tpm2_getrandom command to fetch `size` bytes in hex format.
+	cmd := exec.Command("tpm2_getrandom", fmt.Sprintf("%d", size), "--hex")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("failed to execute tpm2_getrandom: %w", err)
 	}
 
-	return string(password), nil
+	// Parse the output as a hex string.
+	trimmedOutput := strings.TrimSpace(out.String())
+	randomBytes, err := hex.DecodeString(trimmedOutput)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode tpm2_getrandom output: %w", err)
+	}
+
+	return randomBytes, nil
 }
 
 func isLUKSMounted(cfg *LUKS) (bool, error) {
@@ -404,8 +493,8 @@ func AddPersistentMount(cfg *LUKS, keyFile string) error {
 	// Update /etc/crypttab
 	var crypttabEntry string
 	if cfg.UseTPM {
-		crypttabEntry = fmt.Sprintf("%s %s none luks,keyscript=/usr/local/bin/tpm-luks-keyscript.sh %s %d\n",
-			cfg.MapperName, cfg.VolumePath, DefaultNVIndex, cfg.PasswordLength)
+		crypttabEntry = fmt.Sprintf("%s %s none luks,keyscript=/usr/local/bin/tpm-luks-keyscript.sh\n",
+			cfg.MapperName, cfg.VolumePath)
 	} else {
 		crypttabEntry = fmt.Sprintf("%s %s %s luks\n", cfg.MapperName, cfg.VolumePath, keyFile)
 	}

@@ -8,7 +8,7 @@ import (
 
 func TestCreateLUKSVolume(t *testing.T) {
 	testFile := "test-luks-volume.img"
-	password := "MyStr0ngP@ssw0rd!"
+	password := []byte("MyStr0ngP@ssw0rd!")
 	sizeMB := 5
 	useTPM := false
 
@@ -25,7 +25,7 @@ func TestCreateLUKSVolume(t *testing.T) {
 }
 func TestCreateLUKSVolumeWithTPM(t *testing.T) {
 	testFile := "test-luks-volume-with-tpm.img"
-	password := "MyStr0ngP@ssw0rd!"
+	password := []byte("MyStr0ngP@ssw0rd!")
 	sizeMB := 5
 	useTPM := true
 

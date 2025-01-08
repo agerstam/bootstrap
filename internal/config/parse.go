@@ -39,10 +39,6 @@ func ParseCommandLine() Command {
 	// Determine command based
 	switch {
 	case *authorize:
-		if *keyfile == "" {
-			fmt.Println("Error: --keyfile is required for --authorize")
-			os.Exit(1)
-		}
 		cmd.CommandName = "authorize"
 		cmd.Bootstrap = *bootstrap
 	case *deauthorize:

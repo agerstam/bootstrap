@@ -46,6 +46,9 @@ func main() {
 
 	switch cfg.Cmd.CommandName {
 	case "authorize":
+		if !cfg.LUKS.UseTPM && len(cfg.Cmd.Keyfile) == 0 {
+			log.Fatalf("Error: --keyfile must be specified when TPM is not used")
+		}
 		authorize(cfg)
 	case "deauthorize":
 		deauthorize(cfg)
@@ -164,7 +167,7 @@ func readBootstrapToken(filePath string) (token *config.BootstrapToken) {
 }
 
 // writeKeyToFile writes the Key field from the LUKS structure to the specified binary file.
-func writeKeyToFile(keyfile string, password string) error {
+func writeKeyToFile(keyfile string, password []byte) error {
 
 	// Validate that the Key field is not empty
 	if len(password) == 0 {
@@ -179,7 +182,7 @@ func writeKeyToFile(keyfile string, password string) error {
 	defer file.Close()
 
 	// Write the Key field to the file
-	_, err = file.Write([]byte(password))
+	_, err = file.Write(password)
 	if err != nil {
 		return fmt.Errorf("failed to write key to file: %w", err)
 	}
@@ -188,26 +191,26 @@ func writeKeyToFile(keyfile string, password string) error {
 }
 
 // readKeyFromFile reads the contents of a key file and validates it using a password.
-func readKeyFromFile(keyfile string) (string, error) {
+func readKeyFromFile(keyfile string) ([]byte, error) {
 	// Open the key file for reading
 	file, err := os.Open(keyfile)
 	if err != nil {
-		return "", fmt.Errorf("failed to open key file: %w", err)
+		return nil, fmt.Errorf("failed to open key file: %w", err)
 	}
 	defer file.Close()
 
 	// Read the entire file content
 	keyData, err := io.ReadAll(file)
 	if err != nil {
-		return "", fmt.Errorf("failed to read key file: %w", err)
+		return nil, fmt.Errorf("failed to read key file: %w", err)
 	}
 
 	// Validate key data (example: check length, match password, etc.)
 	if len(keyData) == 0 {
-		return "", fmt.Errorf("key file is empty")
+		return nil, fmt.Errorf("key file is empty")
 	}
 
-	return string(keyData), nil
+	return keyData, nil
 }
 
 func printLUKSConfig(cfg *config.AppConfig) {
