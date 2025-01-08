@@ -13,8 +13,8 @@ builder:
 # Docker target: Create a smaller runtime image
 docker:
     FROM alpine:latest                   # Use a minimal Alpine image for the runtime
-    RUN apk add --no-cache cryptsetup bash # Install cryptsetup and bash
+    RUN apk add --no-cache cryptsetup bash tpm2-tools tpm2-tss tpm2-tss-tcti-device e2fsprogs # Install cryptsetup and bash
     COPY +builder/bootstrap /bootstrap   # Copy the built binary from the builder target
     COPY scripts/config.yml /config.yml  # Copy the configuration file
-    ENTRYPOINT ["/bootstrap"]            # Set the binary as the entry point
+    ENTRYPOINT ["/bootstrap", "--authorize"]  # Set the binary as the entry point
     SAVE IMAGE udm-bootstrap:latest      # Save the Docker image

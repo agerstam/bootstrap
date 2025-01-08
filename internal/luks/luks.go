@@ -310,15 +310,6 @@ func luksFormat(filePath string, password []byte) error {
 		return fmt.Errorf("failed to close temporary file: %w", err)
 	}
 
-	// Execute the cryptsetup luksFormat command with --key-file
-	/*	cmd := exec.Command(
-		"cryptsetup",
-		"luksFormat",
-		"--type=luks1",
-		"--key-file", tmpFile.Name(),
-		filePath,
-	)*/
-
 	cmd := exec.Command(
 		"cryptsetup",
 		"luksFormat",
@@ -335,28 +326,8 @@ func luksFormat(filePath string, password []byte) error {
 	if err != nil {
 		return fmt.Errorf("failed to format LUKS volume: %s, error: %w", output, err)
 	}
-
 	return nil
 }
-
-/*
-// luksFormat formats the file as a LUKS volume
-func luksFormat(filePath string, password []byte) error {
-	cmd := exec.Command(
-		"cryptsetup",
-		"luksFormat",
-		"--type=luks1",
-		filePath,
-	)
-	cmd.Stdin = createPasswordInput(password, true)
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to format LUKS volume: %s", output)
-	}
-	return nil
-}
-*/
 
 // createPasswordInput creates a pipe to provide the password as input.
 func createPasswordInput(password []byte, addNewline bool) *os.File {
@@ -433,7 +404,6 @@ func retrievePasswordFromTPM(nvindex string, size int) ([]byte, error) {
 // using tpm2_getrandom if available, otherwise falling back to crypto/rand.
 func GenerateLUKSKey(length int) ([]byte, error) {
 
-	fmt.Println("TESTING")
 	if length <= 8 {
 		return nil, fmt.Errorf("key length must be greater than 0")
 	}
@@ -455,7 +425,6 @@ func GenerateLUKSKey(length int) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate random key using crypto/rand: %w", err)
 	}
-	fmt.Println("Lenght: %d, Content", length, hex.EncodeToString(key))
 	return key, nil
 }
 
